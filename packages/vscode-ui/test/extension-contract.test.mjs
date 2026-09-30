@@ -19,6 +19,8 @@ const runtimeHostSource = fs.readFileSync(path.join(packageDir, 'src', 'runtime'
 const terminalAgentSource = fs.readFileSync(path.join(packageDir, 'src', 'terminal', 'terminalAgent.ts'), 'utf8');
 const terminalClientSource = fs.readFileSync(path.join(packageDir, 'src', 'terminal', 'runtimeClient.ts'), 'utf8');
 const runtimeServicesSource = fs.readFileSync(path.join(packageDir, 'src', 'runtime', 'runtimeServices.ts'), 'utf8');
+const linuxInstallerSource = fs.readFileSync(path.join(repoRoot, 'linux-package', 'install.sh'), 'utf8');
+const windowsInstallerSource = fs.readFileSync(path.join(repoRoot, 'windows-package', 'install.ps1'), 'utf8');
 
 test('Pi command contract is wired from manifest to runtime registration', () => {
 	const commands = manifest.contributes?.commands ?? [];
@@ -224,4 +226,16 @@ test('the attachment picker offers files and images', () => {
 	assert.ok(sidebarSource.includes('Attach Image...'));
 	assert.ok(appSource.includes('Attached file:'));
 	assert.ok(appSource.includes('Attached image:'));
+});
+
+
+test('installers must not seed a hardcoded stale Ollama model', () => {
+	assert.ok(!linuxInstallerSource.includes('qwen2.5-coder:7b'), 'Linux installer must not seed qwen2.5-coder:7b');
+	assert.ok(!windowsInstallerSource.includes('qwen2.5-coder:7b'), 'Windows installer must not seed qwen2.5-coder:7b');
+});
+
+test('runtime recovers resumed sessions whose Ollama model no longer exists', () => {
+	assert.ok(runtimeHostSource.includes('recoverMissingOllamaModel'), 'runtime must have missing-Ollama-model recovery');
+	assert.ok(runtimeHostSource.includes('/api/tags'), 'runtime recovery must refresh Ollama model availability');
+	assert.ok(runtimeHostSource.includes('setActiveModel(id)'), 'runtime must persist the recovered Ollama model as active');
 });

@@ -371,25 +371,26 @@ try {
 	const shrinkwrap = generateShrinkwrap();
 	const content = `${JSON.stringify(shrinkwrap, null, "\t")}\n`;
 
+	const shrinkwrapDisplayPath = shrinkwrapPath.replace(repoRoot + "/", "");
 	if (checkOnly) {
 		if (!existsSync(shrinkwrapPath)) {
-			console.error("packages/coding-agent/npm-shrinkwrap.json is missing.");
+			console.error(`${shrinkwrapDisplayPath} is missing.`);
 			console.error("Run: npm run shrinkwrap:coding-agent");
 			process.exit(1);
 		}
 		const current = readFileSync(shrinkwrapPath, "utf8");
 		if (current !== content) {
-			console.error("packages/coding-agent/npm-shrinkwrap.json is out of date.");
+			console.error(`${shrinkwrapDisplayPath} is out of date.`);
 			console.error("Run: npm run shrinkwrap:coding-agent");
 			process.exit(1);
 		}
-		console.log("packages/coding-agent/npm-shrinkwrap.json is up to date.");
+		console.log(`${shrinkwrapDisplayPath} is up to date.`);
 	} else {
 		writeFileSync(shrinkwrapPath, content);
 		const packageCount = Object.keys(shrinkwrap.packages).length - 1;
 		const platformPackageCount = Object.values(shrinkwrap.packages).filter((entry) => entry.os || entry.cpu || entry.libc).length;
 		console.log(
-			`Wrote packages/coding-agent/npm-shrinkwrap.json (${packageCount} packages, ${platformPackageCount} platform-specific).`,
+			`Wrote ${shrinkwrapDisplayPath} (${packageCount} packages, ${platformPackageCount} platform-specific).`,
 		);
 	}
 } catch (error) {

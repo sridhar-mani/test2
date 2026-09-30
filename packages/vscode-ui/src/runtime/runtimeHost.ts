@@ -342,6 +342,75 @@ export class ZiqRuntimeHost {
 		};
 	}
 
+private isMissingModelError(error: unknown): boolean {
+		const message = error instanceof Error ? error.message : String(error);
+		return /model[^\n]*(?:not found|not_found_error)/i.test(message) || /not_found_error/i.test(message);
+	}
+
+	private async recoverMissingOllamaModel(session: AgentSession): Promise<boolean> {
+		const currentModel = session.model as any;
+		if (!currentModel?.provider || !currentModel?.id) return false;
+
+		const ollamaUrl = PiSettings.ollamaUrl.replace(/\\/$/, "");
+		try {
+			const controller = new AbortController();
+			const timeoutId = setTimeout(() => controller.abort(), 3000);
+			const response = await fetch(`${ollamaUrl}/api/tags`, {
+				method: "GET",
+				signal: controller.signal,
+			});
+			clearTimeout(timeoutId);
+			if (!response.ok) return false;
+
+			const data = (await response.json()) as {
+				models?: Array<{ name?: string; model?: string; capabilities?: string[]; details?: { context_length?: number } }>;
+			};
+			const available = (data.models ?? []).filter((item) => {
+				const capabilities = item.capabilities;
+				return !(capabilities?.length === 1 && capabilities[0] === "embedding");
+			});
+			if (available.length === 0) return false;
+
+			const currentId = String(currentModel.id);
+			const stillInstalled = available.some((item) => (item.name || item.model) === currentId || item.model === currentId);
+			if (stillInstalled) return false;
+
+			const replacement = available[0];
+			const id = replacement.name || replacement.model;
+			if (!id) return false;
+
+			const entry: CustomModelEntry = {
+				id,
+				name: id,
+				label: `Ollama: ${id}`,
+				baseUrl: `${ollamaUrl}/v1`,
+				apiKey: "ollama",
+				api: "openai-completions",
+				isOllama: true,
+				vision: replacement.capabilities?.includes("vision") ?? false,
+				reasoning: replacement.capabilities?.includes("thinking") ?? replacement.capabilities?.includes("reasoning") ?? false,
+				contextWindow: replacement.details?.context_length || 128000,
+			};
+			const providerId = "custom-" + id;
+			const provider = convertCustomModels([entry])[providerId];
+			if (!provider) return false;
+			await this.backend.registerCustomProvider(providerId, provider);
+			const replacementModel = this.modelRuntime.getModel(providerId, id) || this.modelRuntime.getModels().find((model) => model.provider === providerId && model.id === id);
+			if (!replacementModel) return false;
+
+			await session.setModel(replacementModel);
+			await PiSettings.setActiveModel(id);
+			this.refreshModelsState();
+			this.refreshDirectoryState();
+			void vscode.window.showWarningMessage(
+				`Ziq: saved model ${currentId} is not installed in Ollama. Switched this session to ${id}.`,
+			);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 private async startPrompt(text: string, options?: BackendPromptOptions): Promise<{ operationId: string; run: Promise<void> }> {
 		const session = await this.ensureSession();
 		if (this.currentOperation) throw new Error("Agent is already running; send a steering message instead.");
@@ -360,7 +429,17 @@ private async startPrompt(text: string, options?: BackendPromptOptions): Promise
 		};
 		this.emitRuntimeSnapshot();
 
-		const run = this.backend.prompt(session.sessionId, text, options).catch((error) => {
+		const run = (async () => {
+			try {
+				await this.backend.prompt(session.sessionId, text, options);
+			} catch (error) {
+				if (this.isMissingModelError(error) && await this.recoverMissingOllamaModel(session)) {
+					await this.backend.prompt(session.sessionId, text, options);
+				} else {
+					throw error;
+				}
+			}
+		})().catch((error) => {
 			this.finishOperation(operationId, "failed", error);
 			throw error;
 		});

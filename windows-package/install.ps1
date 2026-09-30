@@ -118,10 +118,7 @@ if (-not (Test-Path $modelsFile)) {
       "api": "openai-completions",
       "apiKey": "ollama",
       "models": [
-        {
-          "id": "qwen2.5-coder:7b",
-          "name": "Qwen 2.5 Coder 7B"
-        }
+        
       ]
     }
   }
