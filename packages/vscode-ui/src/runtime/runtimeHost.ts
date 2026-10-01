@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { mkdir } from "node:fs/promises";
+import { mkdir, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -119,7 +119,6 @@ type SubagentEvent = {
 	toolCallId?: string;
 	toolStatus?: "running" | "completed" | "error";
 	args?: Record<string, unknown>;
-	result?: string;
 	result?: string;
 	sessionPath?: string;
 	worktreePath?: string;
@@ -341,9 +340,10 @@ export class ZiqRuntimeHost {
 		if (!previous) return;
 		this.sessionUnsubscribe?.();
 		this.sessionUnsubscribe = undefined;
-		this.session = undefined;
-		this.sessionServices = undefined;
 		const sessionManager = previous.sessionManager;
+		const sessionServices = this.sessionServices;
+		this.session = undefined;
+		this.sessionServices = sessionServices;
 		const model = previous.model;
 		const thinkingLevel = previous.thinkingLevel;
 		const effectiveCwd = this.activeWorktree?.isIsolated ? this.activeWorktree.worktreePath : this.cwd;
@@ -363,6 +363,7 @@ export class ZiqRuntimeHost {
 			},
 			enableAttributionHeaders: true,
 		});
+		this.sessionManager = sessionManager;
 		this.session = created.session;
 		await this.session.bindExtensions({
 			uiContext: this.createVsCodeExtensionUIContext(),
@@ -572,7 +573,7 @@ export class ZiqRuntimeHost {
 		}
 		return this.serialize(async () => {
 			if (this.currentOperation) throw new Error("Wait for the current response to finish before switching sessions.");
-			if (this.session?.getSessionFile?.() === sessionPath) return this.describeSession();
+			if (this.sessionManager?.getSessionFile() === sessionPath) return this.describeSession();
 			this.sessionUnsubscribe?.();
 			this.sessionUnsubscribe = undefined;
 			if (this.session) await this.backend.destroySession(this.session.sessionId);
@@ -596,31 +597,46 @@ export class ZiqRuntimeHost {
 		}
 		const manager = SessionManager.open(sessionPath, undefined, this.cwd);
 		manager.appendSessionInfo(next);
+		const header = manager.getHeader();
+		if (!header) throw new Error("Session has no header: " + sessionPath);
 		return {
 			serverId: this.serverId,
 			sessionId: manager.getSessionId(),
 			name: next,
-			createdAt: new Date(manager.getHeader().timestamp).getTime(),
+			createdAt: new Date(header.timestamp).getTime(),
 			path: sessionPath,
 		};
 	}
 
-	async removeSession(): Promise<void> {
+	async removeSession(sessionId = this.session?.sessionId): Promise<void> {
 		await this.serialize(async () => {
-			if (!this.session) {
+			if (!sessionId) {
 				await this.disposeActiveWorktree();
 				return;
 			}
-			this.sessionUnsubscribe?.();
-			this.sessionUnsubscribe = undefined;
-			await this.backend.destroySession(this.session.sessionId);
-			this.session = undefined;
-			this.sessionManager = undefined;
-			this.sessionServices = undefined;
-			this.currentOperation = undefined;
-			this.queuedMessages = [];
+			const isActive = this.session?.sessionId === sessionId;
+			const sessionPath = isActive
+				? this.sessionManager?.getSessionFile()
+				: SessionManager.findById(this.cwd, sessionId);
+			if (isActive && this.session) {
+				this.sessionUnsubscribe?.();
+				this.sessionUnsubscribe = undefined;
+				await this.backend.destroySession(this.session.sessionId);
+				this.session = undefined;
+				this.sessionManager = undefined;
+				this.sessionServices = undefined;
+				this.currentOperation = undefined;
+				this.queuedMessages = [];
+			}
+			if (sessionPath) {
+				try {
+					await unlink(sessionPath);
+				} catch (error: any) {
+					if (error?.code !== "ENOENT") throw error;
+				}
+			}
+			if (isActive) await this.disposeActiveWorktree();
 			this.refreshDirectoryState();
-			await this.disposeActiveWorktree();
 		});
 	}
 
@@ -743,7 +759,8 @@ export class ZiqRuntimeHost {
 		requestedSessionId: string | undefined,
 		settings: AgentFeaturesSettings,
 	): Promise<WorktreeSession> {
-		if (!settings.worktree.enabled) {
+		const worktreeSettings = settings.worktree;
+		if (!worktreeSettings?.enabled) {
 			WorkspaceContext.setRuntimeRoot(undefined);
 			return { worktreePath: this.cwd, branchName: "", isIsolated: false };
 		}
@@ -751,10 +768,10 @@ export class ZiqRuntimeHost {
 		if (forceNew) await this.disposeActiveWorktree();
 		const created = await WorktreeManager.createWorktree({
 			repoPath: this.cwd,
-			sessionId: requestedSessionId ?? randomUUID(),
-			taskName: "ziq-session",
-			worktreeRootDir: settings.worktree.rootDir || undefined,
-		});
+		sessionId: requestedSessionId ?? randomUUID(),
+		taskName: "ziq-session",
+		worktreeRootDir: worktreeSettings.rootDir || undefined,
+	});
 		this.activeWorktree = created;
 		return created;
 	}
@@ -766,8 +783,8 @@ export class ZiqRuntimeHost {
 			return;
 		}
 		const worktree = this.activeWorktree;
-		const settings = this.readAgentFeatureSettings();
-		if (settings.worktree.cleanupOnDispose) {
+		const worktreeSettings = this.readAgentFeatureSettings().worktree;
+		if (worktreeSettings?.cleanupOnDispose) {
 			await WorktreeManager.removeWorktree(this.cwd, worktree.worktreePath, worktree.branchName);
 		}
 		this.activeWorktree = undefined;
@@ -885,25 +902,41 @@ export class ZiqRuntimeHost {
 							};
 						})
 					: [];
-				const activity = message.role === "assistant"
-					? blocks.flatMap((block: any, index) => {
+				const activity: Array<
+					| { id: string; kind: "thinking"; thinking: { id: string; text: string; status: "complete" } }
+					| {
+							id: string;
+							kind: "tool";
+							tool: {
+								id: string;
+								name: string;
+								status: "completed" | "error";
+								args?: Record<string, unknown> | string;
+								result?: string;
+								isError?: boolean;
+							};
+						}
+				> = [];
+				if (message.role === "assistant") {
+					blocks.forEach((block: any, index: number) => {
 						if (block?.type === "thinking") {
-							const text = typeof block.thinking === "string" ? block.thinking : typeof block.text === "string" ? block.text : "";
-							if (!text.trim()) return [];
+							const thinkingText =
+								typeof block.thinking === "string" ? block.thinking : typeof block.text === "string" ? block.text : "";
+							if (!thinkingText.trim()) return;
 							const thinking = {
 								id: `thinking-${projected.sourceEntry.id}-${index}`,
-								text,
+								text: thinkingText,
 								status: "complete" as const,
 							};
-							return [{ id: thinking.id, kind: "thinking" as const, thinking }];
+							activity.push({ id: thinking.id, kind: "thinking", thinking });
+							return;
 						}
 						if (block?.type === "toolCall") {
 							const tool = toolCalls.find((item) => item.id === String(block.id));
-							return tool ? [{ id: tool.id, kind: "tool" as const, tool }] : [];
+							if (tool) activity.push({ id: tool.id, kind: "tool", tool });
 						}
-						return [];
-					})
-				: [];
+					});
+				}
 				if (!content && thinkingSegments.length === 0 && toolCalls.length === 0) continue;
 				result.push({
 					entryId: projected.sourceEntry.id,
@@ -1360,10 +1393,9 @@ export class ZiqRuntimeHost {
 					list: async () => this.listSessions(),
 					switch: async (sessionPath: string) => this.switchSession(sessionPath),
 					rename: async (sessionPath: string, name: string) => this.renameSession(sessionPath, name),
-					remove: async () => {
-						const sessionId = this.session?.sessionId;
-						if (sessionId) await presentation.prepareSessionRemoval(sessionId, BACKGROUND_CONTEXT);
-						await this.removeSession();
+					remove: async (sessionId: string) => {
+						await presentation.prepareSessionRemoval(sessionId, BACKGROUND_CONTEXT);
+						await this.removeSession(sessionId);
 					},
 					attach: async (sessionId: string) => presentation.attachSession(sessionId, BACKGROUND_CONTEXT),
 					detach: async () => presentation.detachSession(BACKGROUND_CONTEXT),

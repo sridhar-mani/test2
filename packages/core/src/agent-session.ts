@@ -367,6 +367,8 @@ function estimateMessagesTokens(messages: AgentMessage[]): number {
 // AgentSession Class
 // ============================================================================
 
+export type AgentSessionSecurityEvaluator = ModelSafetyEvaluator;
+
 export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;

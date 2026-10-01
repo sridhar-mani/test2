@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ModelsSimpleStreamOptions } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
-import { AgentSession } from "./agent-session.ts";
+import { AgentSession, type AgentSessionSecurityEvaluator } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
 import { getAgentDir } from "./config.ts";
@@ -93,7 +93,7 @@ export interface CreateAgentSessionOptions {
 	/** Optional runtime observer around tool execution. */
 	toolObserver?: import("./agent-session.ts").AgentToolObserver;
 	/** Optional model-backed safety evaluator for risky/ambiguous tool calls. */
-	securityEvaluator?: ModelSafetyEvaluator;
+	securityEvaluator?: AgentSessionSecurityEvaluator;
 
 	/** Resource loader. When omitted, DefaultResourceLoader is used. */
 	resourceLoader?: ResourceLoader;

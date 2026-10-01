@@ -13,7 +13,7 @@ import {
 export interface ModelEntry {
 	id: string;
 	name: string;
-	provider: 'ollama' | 'byom' | 'builtin';
+	provider: string;
 	baseUrl?: string;
 	details?: string;
 	reasoning?: boolean;

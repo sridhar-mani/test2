@@ -4,13 +4,15 @@
 	"description": "Core runtime, session management, compaction, and tools for Pi agent",
 	"type": "module",
 	"private": true,
-	"main": "./src/index.ts",
-	"types": "./src/index.ts",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
 	"exports": {
 		".": {
 			"source": "./src/index.ts",
-			"default": "./src/index.ts"
-		}
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./package.json": "./package.json"
 	},
 	"scripts": {
 		"clean": "shx rm -rf dist",
@@ -41,5 +43,10 @@
 		"@types/proper-lockfile": "4.1.4",
 		"@types/semver": "7.7.1"
 	},
-	"license": "MIT"
+	"license": "MIT",
+	"files": [
+		"dist",
+		"README.md",
+		"CHANGELOG.md"
+	]
 }

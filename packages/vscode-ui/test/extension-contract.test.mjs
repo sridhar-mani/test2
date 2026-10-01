@@ -142,7 +142,7 @@ test('VS Code tools expose workspace, editing, and language-service surfaces', (
 test('VS Code and terminal share one server-owned live Pi runtime', () => {
 	assert.ok(extensionSource.includes("startZiqRuntimeHost"), 'extension startup must start the runtime host');
 	assert.ok(runtimeHostSource.includes('createVsCodeTools()'), 'runtime host must own the VS Code capability registry');
-	assert.ok(runtimeHostSource.includes('customTools: createVsCodeTools()'), 'the live AgentSession must receive VS Code tools exactly at runtime creation');
+	assert.ok(runtimeHostSource.includes('customTools: [...createVsCodeTools(), ...createRuntimeAgentTools(this)]'), 'the live AgentSession must receive the complete VS Code and runtime tool surface at runtime creation');
 	assert.ok(runtimeHostSource.includes('createUnixServer'), 'runtime host must expose the Pi server transport');
 	assert.ok(runtimeHostSource.includes('createUnixServer'), 'runtime host must expose the Pi server transport');
 	assert.ok(runtimeHostSource.includes('RoutedSessionHandle'), 'runtime host must expose routed session attachments through pi-server');
@@ -160,6 +160,61 @@ test('VS Code and terminal share one server-owned live Pi runtime', () => {
 	assert.ok(terminalClientSource.includes('AgentController'), 'terminal client must use the routed AgentController service');
 });
 
+test('runtime host preserves the pre-merge session and prompt API surface', () => {
+	for (const signature of [
+		'async createNewSession(',
+		'async switchSession(',
+		'async renameSession(',
+		'async removeSession(',
+		'describeSession(): SessionSummary',
+		'private async startPrompt(',
+		'private async prompt(',
+		'private async steer(',
+		'private async followUp(',
+		'async attachLocal(): Promise<ZiqRuntimeAttachment>',
+	]) {
+		assert.ok(runtimeHostSource.includes(signature), `runtime host must retain ${signature}`);
+	}
+});
+
+test('subagent event contract has unique property names', () => {
+	const match = runtimeHostSource.match(/type SubagentEvent = \{([\\s\\S]*?)\n\};/);
+	assert.ok(match, 'runtime host must declare the subagent event contract');
+	const names = [...match[1].matchAll(/^\s*([A-Za-z_$][\\w$]*)\\??:/gm)].map((entry) => entry[1]);
+	assert.equal(new Set(names).size, names.length, 'SubagentEvent must not contain duplicate property declarations');
+});
+
+test('runtime service removal honors the requested session id', () => {
+	assert.ok(
+		runtimeHostSource.includes('remove: async (sessionId: string)'),
+		'SessionManagement.remove must receive the requested session id',
+	);
+	assert.ok(
+		runtimeHostSource.includes('this.removeSession(sessionId)'),
+		'SessionManagement.remove must remove the requested session rather than always removing the active session',
+	);
+});
+
+test('runtime feature-setting rebuild preserves the active session manager and presentation state', () => {
+	const rebuild = runtimeHostSource.match(/private async rebuildSessionForFeatureSettings\(\): Promise<void> \{([\\s\\S]*?)\n\t\}/);
+	assert.ok(rebuild, 'runtime host must retain the feature-setting rebuild path');
+	assert.ok(
+		rebuild[1].includes('this.sessionManager = sessionManager;'),
+		'session rebuilds must keep the SessionManager used to create the active AgentSession',
+	);
+	assert.ok(
+		rebuild[1].includes('const sessionServices = this.sessionServices;') &&
+			rebuild[1].includes('this.sessionServices = sessionServices;'),
+		'session rebuilds must keep replicated presentation state attached',
+	);
+});
+
+test('runtime host composes VS Code and runtime tools in the live AgentSession', () => {
+	assert.ok(
+		runtimeHostSource.includes('customTools: [...createVsCodeTools(), ...createRuntimeAgentTools(this)]'),
+		'live sessions must receive both VS Code tools and runtime-managed tools',
+	);
+});
 test('Activity Bar sidebar contribution is packagable and has a real icon asset', () => {
 	const containers = manifest.contributes?.viewsContainers?.activitybar ?? [];
 	const ziqContainer = containers.find((entry) => entry.id === 'pi-assistant-container');
@@ -177,7 +232,7 @@ test('runtime host dependencies and ownership are declared', () => {
 	]) {
 		assert.ok(packageJson.dependencies?.[dependency], `vscode-ui must declare ${dependency}`);
 	}
-	assert.ok(runtimeHostSource.includes('customTools: createVsCodeTools()'));
+	assert.ok(runtimeHostSource.includes('customTools: [...createVsCodeTools(), ...createRuntimeAgentTools(this)]'));
 });
 
 test('modern sidebar uses the VS Code webview surface', () => {

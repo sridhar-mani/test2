@@ -1,0 +1,45 @@
+name: VS Code Runtime
+
+on:
+  push:
+    branches:
+      - main
+      - fix/runtime-regression-hardening
+  pull_request:
+    paths:
+      - "packages/vscode-ui/**"
+      - "packages/core/**"
+      - "packages/agent/**"
+      - "packages/chord/**"
+      - "packages/ai/**"
+      - "packages/client/**"
+      - "packages/server/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/vscode-runtime.yml"
+
+jobs:
+  vscode-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Build workspace packages
+        run: npm run build
+
+      - name: Typecheck VS Code extension
+        run: npm --workspace=ziq-vscode-ui run typecheck
+
+      - name: Run VS Code contract tests
+        run: npm --workspace=ziq-vscode-ui test
