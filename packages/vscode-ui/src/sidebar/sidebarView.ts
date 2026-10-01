@@ -428,27 +428,30 @@ export class PiSidebarViewProvider implements vscode.WebviewViewProvider {
 			let currentAssistantTextPreview = '';
 			let currentAssistantThinkingText = '';
 			let currentAssistantText = '';
-			let streamSnapshotTimer: ReturnType<typeof setTimeout> | undefined;
-			let streamSnapshotPending = false;
+			let pendingThinkingDelta = '';
+			let pendingTextDelta = '';
+			let deltaTimer: ReturnType<typeof setTimeout> | undefined;
 
-			const flushStreamSnapshot = (): void => {
-				if (streamSnapshotTimer) {
-					clearTimeout(streamSnapshotTimer);
-					streamSnapshotTimer = undefined;
+			const flushStreamDeltas = (): void => {
+				if (deltaTimer) {
+					clearTimeout(deltaTimer);
+					deltaTimer = undefined;
 				}
-				streamSnapshotPending = false;
-				this.queueWebviewMessage({
-					type: 'streamSnapshot',
-					streamId,
-					thinking: currentAssistantThinkingText,
-					text: currentAssistantText,
-				}, 'stream_snapshot');
+				if (pendingThinkingDelta) {
+					const delta = pendingThinkingDelta;
+					pendingThinkingDelta = '';
+					this.queueWebviewMessage({ type: 'streamThinkingDelta', streamId, text: delta }, 'thinking_delta');
+				}
+				if (pendingTextDelta) {
+					const delta = pendingTextDelta;
+					pendingTextDelta = '';
+					this.queueWebviewMessage({ type: 'streamDelta', streamId, text: delta }, 'text_delta');
+				}
 			};
 
-			const scheduleStreamSnapshot = (): void => {
-				if (streamSnapshotPending) return;
-				streamSnapshotPending = true;
-				streamSnapshotTimer = setTimeout(() => flushStreamSnapshot(), 80);
+			const scheduleStreamDeltas = (): void => {
+				if (deltaTimer) return;
+				deltaTimer = setTimeout(flushStreamDeltas, 50);
 			};
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			const unsubscribe = attachment.subscribe((event: any) => {
@@ -467,7 +470,7 @@ export class PiSidebarViewProvider implements vscode.WebviewViewProvider {
 					}
 					switch (assistantMessageEvent.type) {
 						case 'thinking_start':
-							this.queueWebviewMessage({ type: 'streamThinkingStart', streamId }, 'thinking_start');
+							this.queueWebviewMessage({ type: 'streamThinkingStart', streamId, segmentId: `thinking-${streamId}-${thinkingDeltaCount + 1}` }, 'thinking_start');
 							break;
 						case 'thinking_delta':
 							if (typeof assistantMessageEvent.delta === 'string' && assistantMessageEvent.delta.length > 0) {
@@ -478,7 +481,8 @@ export class PiSidebarViewProvider implements vscode.WebviewViewProvider {
 									logPi(`Sidebar Pi thinking_delta streamId=${streamId} count=${thinkingDeltaCount} chars=${assistantMessageEvent.delta.length}`);
 								}
 								currentAssistantThinkingText += assistantMessageEvent.delta;
-								scheduleStreamSnapshot();
+								pendingThinkingDelta += assistantMessageEvent.delta;
+								scheduleStreamDeltas();
 							}
 							break;
 						case 'thinking_end':
@@ -497,7 +501,8 @@ export class PiSidebarViewProvider implements vscode.WebviewViewProvider {
 									logPi(`Sidebar Pi text_delta streamId=${streamId} count=${textDeltaCount} chars=${assistantMessageEvent.delta.length}`);
 								}
 								currentAssistantText += assistantMessageEvent.delta;
-								scheduleStreamSnapshot();
+								pendingTextDelta += assistantMessageEvent.delta;
+								scheduleStreamDeltas();
 							}
 							break;
 					}
@@ -509,6 +514,23 @@ export class PiSidebarViewProvider implements vscode.WebviewViewProvider {
 						toolName: event.toolName || 'tool',
 						args: event.args,
 					}, 'tool_execution_start');
+				} else if (event.type === 'tool_execution_update') {
+					let preview = '';
+					const partial = event.partialResult;
+					if (typeof partial?.content?.map === 'function') {
+						preview = partial.content.map((item: any) => item?.text || '').join('\n');
+					} else if (typeof partial === 'string') {
+						preview = partial;
+					} else if (partial !== undefined) {
+						try { preview = JSON.stringify(partial); } catch { preview = String(partial); }
+					}
+					this.queueWebviewMessage({
+						type: 'toolExecutionUpdate',
+						streamId,
+						toolCallId: event.toolCallId || 'unknown',
+						toolName: event.toolName || 'tool',
+						partialResult: preview.slice(0, 1600),
+					}, 'tool_execution_update');
 				} else if (event.type === 'tool_execution_end') {
 					let resultText = '';
 					if (typeof event.result?.content?.[0]?.text === 'string') {
@@ -520,13 +542,14 @@ export class PiSidebarViewProvider implements vscode.WebviewViewProvider {
 					} else if (event.result !== undefined && event.result !== null) {
 						resultText = JSON.stringify(event.result, null, 2);
 					}
-					const safeResult = resultText.length > 50000 ? resultText.slice(0, 50000) + '\n... (truncated)' : resultText;
+					const safeResult = resultText.length > 8000 ? resultText.slice(0, 8000) + '\n… output truncated for UI performance.' : resultText;
 					this.queueWebviewMessage({
 						type: 'toolExecutionEnd',
 						streamId,
 						toolCallId: event.toolCallId || 'unknown',
 						toolName: event.toolName || 'tool',
 						result: safeResult,
+						details: event.result?.details,
 						isError: Boolean(event.isError),
 					}, 'tool_execution_end');
 				} else if (event.type === 'compaction_start') {
@@ -567,17 +590,10 @@ export class PiSidebarViewProvider implements vscode.WebviewViewProvider {
 			} finally {
 				unsubscribe();
 			}
-			this.queueWebviewMessage({
-				type: 'assistantFinal',
-				streamId,
-				thinking: currentAssistantThinkingText,
-				text: currentAssistantText,
-			}, 'assistant_final');
-
+			flushStreamDeltas();
 			this.queueWebviewMessage({
 				type: 'streamEnd',
 				streamId,
-				thinking: currentAssistantThinkingText,
 				text: currentAssistantText,
 				thinkingDeltaCount,
 				textDeltaCount,

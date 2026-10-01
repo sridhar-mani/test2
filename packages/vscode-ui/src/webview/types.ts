@@ -10,13 +10,28 @@ export interface ModelEntry {
 export interface ToolCallRecord {
 	/** Unique tool call ID from the backend */
 	id: string;
+	kind: 'tool' | 'subagent';
 	name: string;
 	status: 'running' | 'completed' | 'error';
 	args?: Record<string, unknown> | string;
-	/** Full or preview result text, only present when status !== 'running' */
+	/** Bounded preview of execution output. */
 	result?: string;
+	details?: unknown;
 	isError?: boolean;
+	startedAt?: number;
+	endedAt?: number;
 }
+
+export interface ThinkingActivity {
+	id: string;
+	kind: 'thinking';
+	status: 'streaming' | 'complete';
+	text: string;
+	startedAt: number;
+	endedAt?: number;
+}
+
+export type ExecutionItem = ThinkingActivity | ToolCallRecord;
 
 export interface ChatMessage {
 	id: string;
@@ -27,6 +42,8 @@ export interface ChatMessage {
 	timestamp: number;
 	/** Tool calls that were made during this assistant turn */
 	toolCalls?: ToolCallRecord[];
+	/** Ordered live execution timeline for this turn. */
+	activity?: ExecutionItem[];
 }
 
 export type AttachedContextKind = "file" | "image" | "text";
@@ -48,13 +65,13 @@ export type WebviewIncomingMessage =
 	| { type: 'queueUpdate'; steering: string[]; followUp: string[] }
 	| { type: 'updateModels'; models: ModelEntry[]; activeModelId?: string; activeModelName?: string; isOllamaOnline?: boolean }
 	| { type: 'streamStart'; streamId?: string; modelName?: string }
-	| { type: 'streamThinkingStart'; streamId?: string }
-	| { type: 'streamThinkingDelta'; streamId?: string; text: string }
-	| { type: 'streamThinkingEnd'; streamId?: string; text?: string }
+	| { type: 'streamThinkingStart'; streamId?: string; segmentId?: string }
+	| { type: 'streamThinkingDelta'; streamId?: string; segmentId?: string; text: string }
+	| { type: 'streamThinkingEnd'; streamId?: string; segmentId?: string; text?: string }
 	| { type: 'streamDelta'; streamId?: string; text: string }
 	| { type: 'streamSnapshot'; streamId?: string; thinking?: string; text?: string }
 	| { type: 'assistantFinal'; streamId?: string; thinking?: string; text?: string }
-	| { type: 'streamEnd'; streamId?: string; thinking?: string; text?: string; thinkingDeltaCount?: number; textDeltaCount?: number }
+	| { type: 'streamEnd'; streamId?: string; text?: string; thinkingDeltaCount?: number; textDeltaCount?: number }
 	| { type: 'generationStopped'; streamId?: string }
 	| { type: 'compactionStart'; streamId?: string }
 	| { type: 'compactionDone'; streamId?: string; summary?: string }
@@ -64,4 +81,5 @@ export type WebviewIncomingMessage =
 	| { type: 'editorContext'; fileName: string; selectedText?: string; fullText?: string; startLine?: number; endLine?: number }
 	| { type: 'error'; message: string; streamId?: string }
 	| { type: 'toolExecutionStart'; streamId?: string; toolCallId: string; toolName: string; args?: any }
-	| { type: 'toolExecutionEnd'; streamId?: string; toolCallId: string; toolName: string; result?: string; isError: boolean };
+	| { type: 'toolExecutionUpdate'; streamId?: string; toolCallId: string; toolName: string; partialResult?: any }
+	| { type: 'toolExecutionEnd'; streamId?: string; toolCallId: string; toolName: string; result?: string; details?: unknown; isError: boolean };

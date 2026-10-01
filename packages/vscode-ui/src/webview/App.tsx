@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import type { ModelEntry, ChatMessage, AttachedContext, WebviewIncomingMessage, ToolCallRecord } from './types';
+import type { ModelEntry, ChatMessage, AttachedContext, WebviewIncomingMessage, ExecutionItem, ToolCallRecord } from './types';
 import { getVsCodeApi } from './vscode';
 import { ModelSelector } from './components/ModelSelector';
 import { MessageList } from './components/MessageList';
@@ -39,15 +39,26 @@ export const App: React.FC = () => {
 
 	const [isGenerating, setIsGenerating] = useState<boolean>(false);
 	const [turnIndicator, setTurnIndicator] = useState<string>('Ready');
-	const [streamingThinking, setStreamingThinking] = useState<string>('');
-	const [streamingContent, setStreamingContent] = useState<string>('');
+		const [streamingContent, setStreamingContent] = useState<string>('');
+	const [liveActivity, setLiveActivity] = useState<ExecutionItem[]>([]);
 	const [, setActiveStreamId] = useState<string | null>(null);
 	const isGeneratingRef = useRef(false);
 
 	const latestStreamRef = useRef<{ thinking: string; content: string }>({ thinking: '', content: '' });
 	const skipNextStreamEndRef = useRef(false);
-	const liveToolCallsRef = useRef<Map<string, ToolCallRecord>>(new Map());
-	const [liveToolCalls, setLiveToolCalls] = useState<ToolCallRecord[]>([]);
+		const liveActivityRef = useRef<ExecutionItem[]>([]);
+	const activityFlushTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>();
+	const activityFlushPendingRef = useRef(false);
+
+	const scheduleActivityRender = (): void => {
+		if (activityFlushPendingRef.current) return;
+		activityFlushPendingRef.current = true;
+		activityFlushTimerRef.current = setTimeout(() => {
+			activityFlushPendingRef.current = false;
+			activityFlushTimerRef.current = undefined;
+			setLiveActivity([...liveActivityRef.current]);
+		}, 50);
+	};
 
 	// Persist chat state across tab switches and window reloads
 	useEffect(() => {
@@ -85,63 +96,98 @@ export const App: React.FC = () => {
 					setActiveStreamId(msg.streamId || String(Date.now()));
 					setTurnIndicator('Thinking…');
 					latestStreamRef.current = { thinking: '', content: '' };
-					liveToolCallsRef.current = new Map();
-					setLiveToolCalls([]);
-					setStreamingThinking('');
+					liveActivityRef.current = [];
+					setLiveActivity([]);
 					setStreamingContent('');
 					break;
 
-				case 'streamThinkingStart':
+				case 'streamThinkingStart': {
+					const segmentId = msg.segmentId || `thinking-${Date.now()}-${Math.random()}`;
+					liveActivityRef.current.push({
+						id: segmentId,
+						kind: 'thinking',
+						status: 'streaming',
+						text: '',
+						startedAt: Date.now(),
+					});
 					setTurnIndicator('Thinking…');
+					scheduleActivityRender();
 					break;
+				}
 
 				case 'streamThinkingDelta': {
 					const delta = msg.text || '';
+					if (!delta) break;
 					latestStreamRef.current.thinking += delta;
-					setStreamingThinking(latestStreamRef.current.thinking);
+					const active = [...liveActivityRef.current].reverse().find((item): item is Extract<ExecutionItem, { kind: 'thinking' }> => item.kind === 'thinking' && item.status === 'streaming');
+					if (active) active.text += delta;
 					setTurnIndicator('Thinking…');
+					scheduleActivityRender();
 					break;
 				}
 
-				case 'streamThinkingEnd':
-					if (msg.text) {
-						if (msg.text.length >= latestStreamRef.current.thinking.length) {
-							latestStreamRef.current.thinking = msg.text;
-						}
-						setStreamingThinking(latestStreamRef.current.thinking);
+				case 'streamThinkingEnd': {
+					const active = [...liveActivityRef.current].reverse().find((item): item is Extract<ExecutionItem, { kind: 'thinking' }> => item.kind === 'thinking' && item.status === 'streaming');
+					if (active) {
+						if (typeof msg.text === 'string' && msg.text.length > active.text.length) active.text = msg.text;
+						active.status = 'complete';
+						active.endedAt = Date.now();
 					}
 					setTurnIndicator('Generating…');
+					scheduleActivityRender();
 					break;
+				}
 
 				case 'streamDelta': {
 					const delta = msg.text || '';
+					if (!delta) break;
 					latestStreamRef.current.content += delta;
-					setStreamingContent(latestStreamRef.current.content);
+					setStreamingContent((current) => current + delta);
 					setTurnIndicator('Generating…');
 					break;
 				}
 
-				case 'streamSnapshot':
-					if (typeof msg.thinking === 'string' && msg.thinking.length >= latestStreamRef.current.thinking.length) {
-						latestStreamRef.current.thinking = msg.thinking;
-						setStreamingThinking(msg.thinking);
-					}
-					if (typeof msg.text === 'string' && msg.text.length >= latestStreamRef.current.content.length) {
-						latestStreamRef.current.content = msg.text;
-						setStreamingContent(msg.text);
-					}
+				case 'toolExecutionStart': {
+					const kind: ToolCallRecord['kind'] = msg.toolName === 'run_subagent' ? 'subagent' : 'tool';
+					const record: ToolCallRecord = {
+						id: msg.toolCallId,
+						kind,
+						name: msg.toolName,
+						args: msg.args,
+						status: 'running',
+						startedAt: Date.now(),
+					};
+					liveActivityRef.current.push(record);
+					setTurnIndicator(kind === 'subagent' ? 'Running subagent…' : `Running ${msg.toolName}…`);
+					scheduleActivityRender();
 					break;
+				}
 
-				case 'assistantFinal':
-					if (typeof msg.thinking === 'string') {
-						latestStreamRef.current.thinking = msg.thinking;
-						setStreamingThinking(msg.thinking);
+				case 'toolExecutionUpdate': {
+					const record = liveActivityRef.current.find((item): item is ToolCallRecord => item.kind === 'tool' || item.kind === 'subagent' ? item.id === msg.toolCallId : false);
+					if (record) {
+						const partial = msg.partialResult;
+						const preview = partial?.content?.map?.((part: any) => part?.text || '').join('\n')
+							|| (typeof partial === 'string' ? partial : partial ? JSON.stringify(partial) : '');
+						record.result = preview.slice(0, 1600);
 					}
-					if (typeof msg.text === 'string') {
-						latestStreamRef.current.content = msg.text;
-						setStreamingContent(msg.text);
-					}
+					scheduleActivityRender();
 					break;
+				}
+
+				case 'toolExecutionEnd': {
+					const record = liveActivityRef.current.find((item): item is ToolCallRecord => (item.kind === 'tool' || item.kind === 'subagent') && item.id === msg.toolCallId);
+					if (record) {
+						record.status = msg.isError ? 'error' : 'completed';
+						record.result = msg.result;
+						record.details = msg.details;
+						record.isError = msg.isError;
+						record.endedAt = Date.now();
+					}
+					setTurnIndicator('Generating…');
+					scheduleActivityRender();
+					break;
+				}
 
 				case 'streamEnd': {
 					isGeneratingRef.current = false;
@@ -149,36 +195,36 @@ export const App: React.FC = () => {
 					if (skipNextStreamEndRef.current) {
 						skipNextStreamEndRef.current = false;
 						latestStreamRef.current = { thinking: '', content: '' };
-						liveToolCallsRef.current = new Map();
-						setLiveToolCalls([]);
-						setStreamingThinking('');
+						liveActivityRef.current = [];
+						setLiveActivity([]);
 						setStreamingContent('');
 						setActiveStreamId(null);
 						break;
 					}
 					setTurnIndicator('Ready');
 					const finalContent = typeof msg.text === 'string' ? msg.text : latestStreamRef.current.content;
-					const finalThinking = typeof msg.thinking === 'string' ? msg.thinking : latestStreamRef.current.thinking;
-					const toolCalls = liveToolCallsRef.current.size > 0
-						? Array.from(liveToolCallsRef.current.values())
-						: undefined;
-					if (finalContent || finalThinking || toolCalls?.length) {
+					const finalActivity = liveActivityRef.current.map((item) =>
+						item.kind === 'thinking' && item.status === 'streaming'
+							? { ...item, status: 'complete' as const, endedAt: Date.now() }
+							: { ...item },
+					);
+					const finalToolCalls = finalActivity.filter((item): item is ToolCallRecord => item.kind === 'tool' || item.kind === 'subagent');
+					if (finalContent || finalActivity.length > 0) {
 						setMessages((prev) => [
 							...prev,
 							{
 								id: String(Date.now()),
 								role: 'assistant',
 								content: finalContent,
-								thinking: finalThinking,
-								toolCalls,
+								toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
+								activity: finalActivity.length > 0 ? finalActivity : undefined,
 								timestamp: Date.now(),
 							},
 						]);
 					}
 					latestStreamRef.current = { thinking: '', content: '' };
-					liveToolCallsRef.current = new Map();
-					setLiveToolCalls([]);
-					setStreamingThinking('');
+					liveActivityRef.current = [];
+					setLiveActivity([]);
 					setStreamingContent('');
 					setActiveStreamId(null);
 					break;
@@ -267,34 +313,6 @@ export const App: React.FC = () => {
 					]);
 					break;
 
-				case 'toolExecutionStart': {
-					const record: ToolCallRecord = {
-						id: msg.toolCallId,
-						name: msg.toolName,
-						args: msg.args,
-						status: 'running',
-					};
-					liveToolCallsRef.current.set(msg.toolCallId, record);
-					setLiveToolCalls(Array.from(liveToolCallsRef.current.values()));
-					setTurnIndicator(`Running ${msg.toolName}…`);
-					break;
-				}
-
-				case 'toolExecutionEnd': {
-					const existing = liveToolCallsRef.current.get(msg.toolCallId);
-					const updated: ToolCallRecord = {
-						id: msg.toolCallId,
-						name: msg.toolName,
-						args: existing?.args,
-						status: msg.isError ? 'error' : 'completed',
-						result: msg.result,
-						isError: msg.isError,
-					};
-					liveToolCallsRef.current.set(msg.toolCallId, updated);
-					setLiveToolCalls(Array.from(liveToolCallsRef.current.values()));
-					setTurnIndicator('Generating…');
-					break;
-				}
 			}
 		};
 
@@ -432,8 +450,9 @@ export const App: React.FC = () => {
 		vscode.postMessage({ command: 'newSession' });
 		setMessages([]);
 		setAttachedContexts([]);
-		setStreamingThinking('');
 		setStreamingContent('');
+		liveActivityRef.current = [];
+		setLiveActivity([]);
 		setTurnIndicator('Ready');
 		setSessionName('New Session');
 		setWorktree(undefined);
@@ -543,10 +562,9 @@ export const App: React.FC = () => {
 			<MessageList
 				messages={messages}
 				onEditMessage={handleEditMessage}
-				streamingThinking={streamingThinking}
 				streamingContent={streamingContent}
 				isGenerating={isGenerating}
-				liveToolCalls={liveToolCalls}
+				liveActivity={liveActivity}
 				onSuggestionClick={handleQuickCommand}
 				onAttachClick={() => vscode.postMessage({ command: 'attachContextPicker' })}
 				onOpenTerminal={() => vscode.postMessage({ command: 'openTerminal' })}

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import type { ChatMessage, ToolCallRecord } from '../types';
+import type { ChatMessage, ExecutionItem, ToolCallRecord } from '../types';
 import { ThinkingBlock } from './ThinkingBlock';
 import { MarkdownView } from './MarkdownView';
 
@@ -11,23 +11,36 @@ const ToolCallCard: React.FC<ToolCallCardProps> = ({ tool }) => {
 	const [expanded, setExpanded] = React.useState(false);
 	const isRunning = tool.status === 'running';
 	const isError = tool.status === 'error';
-	const hasDetails = Boolean(tool.result || tool.args);
+	const isSubagent = tool.kind === 'subagent';
+	const hasDetails = Boolean(tool.result || tool.args || tool.details);
+	const displayName = isSubagent ? 'Subagent' : tool.name;
+	const icon = isSubagent
+		? 'codicon-symbol-method'
+		: isRunning
+			? 'codicon-loading codicon-modifier-spin'
+			: isError
+				? 'codicon-error'
+				: 'codicon-check';
 
 	return (
-		<div className={`tool-call-card tool-call-${tool.status} ${expanded ? 'tool-call-expanded' : ''}`}>
+		<div className={`tool-call-card tool-call-${tool.status} ${isSubagent ? 'tool-call-subagent' : ''} ${expanded ? 'tool-call-expanded' : ''}`}>
 			<div
 				className="tool-call-header"
 				onClick={() => hasDetails && setExpanded(!expanded)}
 				style={{ cursor: hasDetails ? 'pointer' : 'default' }}
-				title={hasDetails ? (expanded ? 'Click to collapse' : 'Click to expand full output') : undefined}
+				title={hasDetails ? (expanded ? 'Click to collapse' : 'Click to expand details') : undefined}
 			>
-				<i className={`codicon ${isRunning ? 'codicon-loading codicon-modifier-spin' : isError ? 'codicon-error' : 'codicon-check'} tool-call-icon`} />
-				<span className="tool-call-name">{tool.name}</span>
+				<i className={`codicon ${icon} tool-call-icon`} />
+				<div className="tool-call-heading">
+					<span className="tool-call-name">{displayName}</span>
+					{isSubagent && <span className="tool-call-kind">AI subagent</span>}
+				</div>
 				<span className="tool-call-status">{isRunning ? 'Running…' : isError ? 'Failed' : 'Done'}</span>
-				{hasDetails && (
-					<i className={`codicon ${expanded ? 'codicon-chevron-up' : 'codicon-chevron-down'} tool-call-expand-icon`} />
-				)}
+				{hasDetails && <i className={`codicon ${expanded ? 'codicon-chevron-up' : 'codicon-chevron-down'} tool-call-expand-icon`} />}
 			</div>
+			{isSubagent && typeof tool.args === 'object' && tool.args && 'prompt' in tool.args && (
+				<div className="tool-call-subagent-prompt">{String((tool.args as Record<string, unknown>).prompt || '')}</div>
+			)}
 			{expanded && !isRunning && (
 				<div className="tool-call-body">
 					{tool.args && (
@@ -42,28 +55,45 @@ const ToolCallCard: React.FC<ToolCallCardProps> = ({ tool }) => {
 							<pre className="tool-call-result-full">{tool.result}</pre>
 						</div>
 					)}
+					{tool.details !== undefined && (
+						<div className="tool-call-section">
+							<div className="tool-call-section-title">Details</div>
+							<pre className="tool-call-code">{typeof tool.details === 'string' ? tool.details : JSON.stringify(tool.details, null, 2)}</pre>
+						</div>
+					)}
 				</div>
 			)}
 			{!expanded && tool.result && !isRunning && (
-				<div
-					className="tool-call-result"
-					onClick={() => setExpanded(true)}
-					title="Click to view full output"
-				>
-					{tool.result.length > 200 ? tool.result.slice(0, 200) + '… (click to expand)' : tool.result}
+				<div className="tool-call-result" onClick={() => setExpanded(true)} title="Click to view output">
+					{tool.result.length > 220 ? tool.result.slice(0, 220) + '…' : tool.result}
 				</div>
 			)}
 		</div>
 	);
 };
 
+const ExecutionTimeline: React.FC<{ items: ExecutionItem[]; live?: boolean }> = ({ items, live = false }) => (
+	<div className="execution-timeline">
+		{items.map((item) =>
+			item.kind === 'thinking' ? (
+				<div className="execution-timeline-item execution-timeline-thinking" key={item.id}>
+					<ThinkingBlock thinking={item.text} isLive={live && item.status === 'streaming'} />
+				</div>
+			) : (
+				<div className="execution-timeline-item" key={item.id}>
+					<ToolCallCard tool={item} />
+				</div>
+			),
+		)}
+	</div>
+);
+
 interface MessageListProps {
 	messages: ChatMessage[];
 	onEditMessage: (message: ChatMessage) => void;
-	streamingThinking: string;
 	streamingContent: string;
 	isGenerating: boolean;
-	liveToolCalls?: ToolCallRecord[];
+	liveActivity?: ExecutionItem[];
 	onSuggestionClick: (cmd: string) => void;
 	onAttachClick: () => void;
 	onOpenTerminal: () => void;
@@ -71,10 +101,9 @@ interface MessageListProps {
 
 export const MessageList: React.FC<MessageListProps> = ({
 	messages,
-	streamingThinking,
 	streamingContent,
 	isGenerating,
-	liveToolCalls,
+	liveActivity = [],
 	onSuggestionClick,
 	onAttachClick,
 	onOpenTerminal,
@@ -84,7 +113,7 @@ export const MessageList: React.FC<MessageListProps> = ({
 
 	useEffect(() => {
 		bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-	}, [messages, streamingThinking, streamingContent, liveToolCalls]);
+	}, [messages, streamingContent, liveActivity]);
 
 	const showWelcome = messages.length === 0 && !isGenerating;
 
@@ -189,15 +218,17 @@ export const MessageList: React.FC<MessageListProps> = ({
 							</button>
 					)}
 					</div>
-					{m.role === 'assistant' && m.thinking && (
-						<ThinkingBlock thinking={m.thinking} isLive={false} />
-					)}
-					{m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0 && (
-						<div className="tool-calls-group">
-							{m.toolCalls.map((tc) => (
-								<ToolCallCard key={tc.id} tool={tc} />
-							))}
-						</div>
+					{m.role === 'assistant' && m.activity && m.activity.length > 0 ? (
+						<ExecutionTimeline items={m.activity} />
+					) : (
+						<>
+							{m.role === 'assistant' && m.thinking && <ThinkingBlock thinking={m.thinking} isLive={false} />}
+							{m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0 && (
+								<div className="tool-calls-group">
+									{m.toolCalls.map((tc) => <ToolCallCard key={tc.id} tool={tc} />)}
+								</div>
+							)}
+						</>
 					)}
 					<div className={`bubble bubble-${m.role}`}>
 						<MarkdownView content={m.content} />
@@ -211,14 +242,7 @@ export const MessageList: React.FC<MessageListProps> = ({
 						<i className="codicon codicon-sparkle author-icon" />
 						<span>Ziq</span>
 					</div>
-					<ThinkingBlock thinking={streamingThinking} isLive={!streamingContent} />
-					{liveToolCalls && liveToolCalls.length > 0 && (
-						<div className="tool-calls-group">
-							{liveToolCalls.map((tc) => (
-								<ToolCallCard key={tc.id} tool={tc} />
-							))}
-						</div>
-					)}
+					{liveActivity.length > 0 && <ExecutionTimeline items={liveActivity} live />}
 					{streamingContent ? (
 						<div className="bubble bubble-assistant">
 							<MarkdownView content={streamingContent} />

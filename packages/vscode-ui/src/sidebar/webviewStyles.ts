@@ -177,6 +177,8 @@ export function getWebviewStyles(): string {
 			font-size:11px;
 			line-height:1.55;
 			background:rgba(0,0,0,0.06);
+			max-height:150px;
+			overflow:auto;
 		}
 		.thinking-inner {
 			white-space:pre-wrap;
@@ -197,6 +199,14 @@ export function getWebviewStyles(): string {
 		pre { margin:0; padding:9px; overflow:auto; font-family:var(--vscode-editor-font-family, monospace); font-size:11px; line-height:1.5; }
 		code { font-family:var(--vscode-editor-font-family, monospace); }
 
+		.execution-timeline { display:flex; flex-direction:column; gap:5px; margin:4px 0 7px; }
+		.execution-timeline-item { min-width:0; }
+		.execution-timeline-thinking { border-left:2px solid var(--ui-border); padding-left:6px; }
+		.tool-call-heading { min-width:0; display:flex; align-items:center; gap:6px; flex:1; }
+		.tool-call-kind { color:var(--ui-muted); font-size:9px; font-weight:500; white-space:nowrap; }
+		.tool-call-subagent { border-left:2px solid var(--vscode-charts-purple, #a277ff); }
+		.tool-call-subagent .tool-call-icon { color:var(--vscode-charts-purple, #a277ff); }
+		.tool-call-subagent-prompt { color:var(--ui-muted); font-size:10px; line-height:1.4; padding:1px 0 2px 18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 		.tool-calls-group { display:flex; flex-direction:column; gap:4px; margin:4px 0; }
 		.tool-call-card { display:flex; flex-direction:column; gap:4px; padding:5px 8px; border-radius:6px; border:1px solid var(--ui-border); background:var(--vscode-editor-background); font-size:11px; }
 		.tool-call-running { border-color:var(--vscode-charts-blue, rgba(0,120,212,.4)); background:color-mix(in srgb, var(--vscode-charts-blue, #0078d4) 6%, var(--vscode-editor-background)); }

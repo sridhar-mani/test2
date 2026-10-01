@@ -7,13 +7,12 @@ interface ThinkingBlockProps {
 }
 
 export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ thinking, isLive }) => {
-	const [isOpen, setIsOpen] = useState(true);
+	const [isOpen, setIsOpen] = useState(isLive);
 
-	// When streaming live thinking, keep open. When it settles, user can collapse/expand.
+	// Keep the active reasoning segment visible while streaming, then collapse it
+	// when the segment completes so long reasoning never dominates the transcript.
 	useEffect(() => {
-		if (isLive) {
-			setIsOpen(true);
-		}
+		setIsOpen(isLive);
 	}, [isLive]);
 
 	if (!thinking || thinking.trim().length === 0) {
@@ -26,7 +25,7 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ thinking, isLive }
 				<button className="thinking-trigger" type="button" aria-label="Toggle thinking details">
 					<div className="thinking-trigger-left">
 						<i className={`codicon ${isLive ? 'codicon-sparkle codicon-spin' : 'codicon-sparkle'}`} />
-						<span>{isLive ? 'Thinking…' : 'Thinking'}</span>
+						<span>{isLive ? 'Thinking…' : 'Thought'}</span>
 					</div>
 					<i className={`codicon codicon-chevron-${isOpen ? 'down' : 'right'} thinking-chevron`} />
 				</button>
